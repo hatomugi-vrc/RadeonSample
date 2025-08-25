@@ -1,2 +1,2 @@
 exe生成コマンド
-pyinstaller --onefile --collect-all pyadl RadeonSample.py 
+pyinstaller --onedir --collect-all pyadl RadeonSample.py 

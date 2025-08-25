@@ -19,9 +19,7 @@ import tkinter as tk
 from threading import Thread
 import time
 
-# 必要なライブラリをインポートまたはインストール
-import_with_install("pyadl", "pyadl")
-from pyadl import ADLManager
+import ADLXPybind as ADLX  # ADLXPybind.pydをインポート
 
 class RadeonGPUApp:
     def __init__(self, root):
@@ -30,6 +28,13 @@ class RadeonGPUApp:
         self.label = tk.Label(root, text="Radeon GPU Info: Detecting...", font=("Arial", 16))
         self.label.pack(pady=20)
         self.running = True
+        # ADLXHelperで初期化
+        self.adlx_helper = ADLX.ADLXHelper()
+        self.ret = self.adlx_helper.Initialize()
+        if self.ret != ADLX.ADLX_RESULT.ADLX_OK:
+            print("ADLX initialization failed")
+            return
+
         self.devices = self.detect_radeon()
         self.thread = Thread(target=self.update_info)
         self.thread.daemon = True
@@ -37,42 +42,69 @@ class RadeonGPUApp:
 
     def detect_radeon(self):
         """Radeon GPUの検出"""
-        if ADLManager is None:
-            return None
         try:
-            devices = ADLManager.getInstance().getDevices()
-            return [device for device in devices if "AMD" in device.adapterName or "Radeon" in device.adapterName]
+            # System Services取得
+            system = self.adlx_helper.GetSystemServices()
+            if system is None:
+                print("Failed to get system services")
+                self.adlx_helper.Terminate()
+                return
+
+            # Performance Monitoring Services取得
+            perf_monitoring = system.GetPerformanceMonitoringServices()
+            if perf_monitoring is None:
+                print("Failed to get performance monitoring services")
+                self.adlx_helper.Terminate()
+                return
+            
+            # GPUリスト取得
+            gpu_list = system.GetGPUs()
+            if gpu_list is None:
+                print("Failed to get GPU list")
+                self.adlx_helper.Terminate()
+                return
+
+            # 最初のGPUでメトリクス取得（複数GPUの場合ループ）
+            self.gpu = gpu_list[0]  # 最初のGPU
+            metrics_support = perf_monitoring.GetSupportedGPUMetrics(self.gpu)
+            if self.ret != ADLX.ADLX_RESULT.ADLX_OK:
+                print("Failed to get metrics support")
+                self.adlx_helper.Terminate()
+                return
+
+            # GPUUsageとVRAMUsageがサポートされているか確認
+            if metrics_support.IsSupportedGPUUsage() and metrics_support.IsSupportedGPUVRAM():
+                current_metrics = perf_monitoring.GetCurrentGPUMetrics(self.gpu)
+                if self.ret == ADLX.ADLX_RESULT.ADLX_OK and current_metrics is not None:
+                    gpu_usage = current_metrics.GPUUsage()  # GPU利用率 (%)
+                    vram_usage = current_metrics.GPUVRAM()  # VRAM使用量 (MB)
+                    print(f"GpuName: {self.gpu.Name()} ")
+
+                    print(f"GPU Utilization: {gpu_usage}%")
+                    print(f"VRAM Usage: {vram_usage} MB")
+                    # Total VRAM取得
+                    total_vram = self.gpu.TotalVRAM()  # IADLXGPUのVRAMメソッドで総VRAM取得 (MB)
+                    print(f"Total VRAM: {total_vram} MB")
+                    
+            devices = {"gpuName":self.gpu.Name(),"GPUUsage":gpu_usage, "VramTotal":total_vram, "VramUsage":vram_usage}
+            # return [device for device in devices if "AMD" in device.adapterName or "Radeon" in device.adapterName]
+            return devices
         except Exception:
             return None
-
+      
     def update_info(self):
         """GPU情報を更新"""
         while self.running:
             if self.devices:
                 try:
+                    self.devices = self.detect_radeon()
                     info = []
-                    for device in self.devices:
-                        clock = device.getCurrentEngineClock() or "N/A"
-                        fan = device.getCurrentFanSpeed() or "N/A"
-                        temp = device.getCurrentTemperature() or "N/A"
-                        # VRAM情報（総量/使用量）
-                        vram_total = "N/A"
-                        vram_used = "N/A"
-                        try:
-                            vram_total = device.getCurrentVRAMUsage()['total'] / (1024 * 1024) if device.getCurrentVRAMUsage() else "N/A"
-                            vram_used = device.getCurrentVRAMUsage()['used'] / (1024 * 1024) if device.getCurrentVRAMUsage() else "N/A"
-                            vram_total = f"{vram_total:.2f} MB" if isinstance(vram_total, float) else vram_total
-                            vram_used = f"{vram_used:.2f} MB" if isinstance(vram_used, float) else vram_used
-                        except (AttributeError, KeyError, TypeError):
-                            pass
-                        info.append(
-                            f"GPU: {device.adapterName}\n"
-                            f"vram_total: {vram_total}\n"
-                            f"vram_used: {vram_used}\n"
-                            f"Clock: {clock} MHz\n"
-                            f"Fan Speed: {fan} RPM\n"
-                            f"Temperature: {temp} °C"
-                        )
+                    info.append(
+                        f"gpuName: {self.devices["gpuName"]}\n"
+                        f"GPUUsage: {self.devices["GPUUsage"]} %\n"
+                        f"vram_total: {self.devices["VramTotal"]} MB\n"
+                        f"vram_used: {self.devices["VramUsage"]} MB"
+                    )
                     self.label.config(text="\n\n".join(info))
                 except Exception as e:
                     self.label.config(text=f"Error: {e}\nEnsure AMD Adrenalin is installed")
@@ -85,6 +117,9 @@ class RadeonGPUApp:
 
     def on_closing(self):
         self.running = False
+        # クリーンアップ
+        self.adlx_helper.Terminate()
+        print("ADLX terminated")
         self.root.destroy()
 
 if __name__ == "__main__":
